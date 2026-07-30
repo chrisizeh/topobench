@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Run focused rank-3 kNN copresheaf ablations on GraphUniverse.
 
-The script keeps the submitted model/config path intact and varies Hydra
+The script keeps the submitted model/config paths intact and varies Hydra
 overrides around
-``model=combinatorial/copresheaf_cc_gated_dim2_gate2_rank3_knn``.
+``model=combinatorial/copresheaf_cc_gated_dim2_gate2_rank3_knn``. It also
+includes the previous local dim-2 gate2 model as an explicit baseline.
 
 Example
 -------
@@ -56,6 +57,7 @@ from hydra.core.global_hydra import GlobalHydra  # noqa: E402
 from omegaconf import OmegaConf, open_dict  # noqa: E402
 
 MODEL_CONFIG = "combinatorial/copresheaf_cc_gated_dim2_gate2_rank3_knn"
+LOCAL_WINNER_MODEL_CONFIG = "combinatorial/copresheaf_cc_gated_dim2_gate2"
 
 TASKS: dict[str, tuple[str, str]] = {
     "community_detection": (
@@ -83,9 +85,15 @@ class Variant:
     name: str
     description: str
     overrides: tuple[str, ...] = ()
+    model_config: str | None = None
 
 
 VARIANTS: dict[str, Variant] = {
+    "local_dim2_gate2": Variant(
+        name="local_dim2_gate2",
+        description="previous local winner: dim-2 triangle-clique gate2 model",
+        model_config=LOCAL_WINNER_MODEL_CONFIG,
+    ),
     "base": Variant(
         name="base",
         description="new rank-3 kNN config unchanged",
@@ -226,6 +234,7 @@ VARIANTS: dict[str, Variant] = {
 
 VARIANT_SETS: dict[str, tuple[str, ...]] = {
     "lifting": (
+        "local_dim2_gate2",
         "base",
         "rank3_cells2",
         "rank3_cells8",
@@ -238,6 +247,7 @@ VARIANT_SETS: dict[str, tuple[str, ...]] = {
         "rank3_cells8_membership2",
     ),
     "architecture": (
+        "local_dim2_gate2",
         "base",
         "depth2",
         "depth4",
@@ -250,6 +260,7 @@ VARIANT_SETS: dict[str, tuple[str, ...]] = {
         "depth4_gate_init_neg3",
     ),
     "core": (
+        "local_dim2_gate2",
         "base",
         "rank3_cells2",
         "rank3_cells8",
@@ -312,6 +323,22 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated training seeds.",
     )
     parser.add_argument(
+        "--job-shards",
+        type=int,
+        default=1,
+        help=(
+            "Split the planned job list into N shards. Use separate shell "
+            "processes with different --job-shard-index values to run "
+            "independent jobs concurrently on the same server/GPU."
+        ),
+    )
+    parser.add_argument(
+        "--job-shard-index",
+        type=int,
+        default=0,
+        help="Zero-based shard index to run when --job-shards > 1.",
+    )
+    parser.add_argument(
         "--n-graphs",
         type=int,
         default=50,
@@ -349,6 +376,45 @@ def parse_args() -> argparse.Namespace:
         "--precision",
         default=None,
         help="Optional Lightning precision override, e.g. 32, 16-mixed.",
+    )
+    parser.add_argument(
+        "--matmul-precision",
+        choices=("highest", "high", "medium"),
+        default="high",
+        help=(
+            "PyTorch float32 matmul precision. 'high' enables TF32-style "
+            "speedups on NVIDIA Ampere/Hopper for float32 paths."
+        ),
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Optional dataloader batch-size override. Useful on full-size "
+            "runs; keep unchanged for strict comparison with prior pilots."
+        ),
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Optional dataloader worker override.",
+    )
+    parser.add_argument(
+        "--pin-memory",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Optional dataloader pin_memory override.",
+    )
+    parser.add_argument(
+        "--persistent-workers",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Optional persistent_workers override. Only useful when "
+            "num_workers > 0."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -410,15 +476,18 @@ def main() -> None:
         print_available_variants()
         return
 
+    validate_job_shard_args(args)
     root = resolve_project_root(args.project_root)
     ensure_repo_on_path(root)
-    output_dir = (
+    torch.set_float32_matmul_precision(args.matmul_precision)
+    base_output_dir = (
         args.output
         or root
         / "experiment_logs"
         / "copresheaf_rank3_knn"
         / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     ).resolve()
+    output_dir = shard_output_dir(base_output_dir, args)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     challenge = load_challenge_utils(root)
@@ -441,6 +510,8 @@ def main() -> None:
         for setting in selected_settings
         for seed in selected_seeds
     ]
+    total_jobs_before_sharding = len(jobs)
+    jobs = shard_jobs(jobs, args)
     completed = (
         set() if args.no_resume else read_completed_job_ids(output_dir)
     )
@@ -454,6 +525,7 @@ def main() -> None:
         seeds=selected_seeds,
         settings=selected_settings,
         total_jobs=len(jobs),
+        total_jobs_before_sharding=total_jobs_before_sharding,
         completed_jobs=len(completed),
     )
 
@@ -535,10 +607,11 @@ def run_one(
     job_id = make_job_id(variant, task, setting, seed)
     run_dir = output_dir / "runs" / f"{job_index:04d}__{job_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    model_config = variant.model_config or MODEL_CONFIG
 
     overrides = [
         dataset_group,
-        f"model={MODEL_CONFIG}",
+        f"model={model_config}",
         f"logger={args.logger}",
         f"paths.output_dir={run_dir.as_posix()}",
         f"paths.work_dir={output_dir.as_posix()}",
@@ -552,6 +625,19 @@ def run_one(
     ]
     if args.precision is not None:
         overrides.append(f"trainer.precision={args.precision}")
+    if args.batch_size is not None:
+        overrides.append(f"dataset.dataloader_params.batch_size={args.batch_size}")
+    if args.num_workers is not None:
+        overrides.append(f"dataset.dataloader_params.num_workers={args.num_workers}")
+    if args.pin_memory is not None:
+        overrides.append(
+            f"dataset.dataloader_params.pin_memory={str(args.pin_memory).lower()}"
+        )
+    if args.persistent_workers is not None:
+        overrides.append(
+            "+dataset.dataloader_params.persistent_workers="
+            f"{str(args.persistent_workers).lower()}"
+        )
     if args.logger == "wandb":
         wandb_name = f"{variant.name}__{task}__{setting.run_slug}__s{seed}"
         overrides.extend(
@@ -598,7 +684,7 @@ def run_one(
         "avg_degree": setting.avg_degree_key,
         "power_law": setting.power_law_key,
         "seed": seed,
-        "model_config": MODEL_CONFIG,
+        "model_config": model_config,
         "hydra_overrides": overrides,
         "output_dir": str(run_dir),
         "elapsed_sec": elapsed_sec,
@@ -682,6 +768,40 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+
+def validate_job_shard_args(args: argparse.Namespace) -> None:
+    """Validate job-sharding CLI arguments."""
+    if args.job_shards < 1:
+        raise ValueError("--job-shards must be at least one.")
+    if args.job_shard_index < 0 or args.job_shard_index >= args.job_shards:
+        raise ValueError(
+            "--job-shard-index must satisfy "
+            f"0 <= index < {args.job_shards}."
+        )
+
+
+def shard_output_dir(base_output_dir: Path, args: argparse.Namespace) -> Path:
+    """Return an output directory isolated for this shard."""
+    if args.job_shards == 1:
+        return base_output_dir
+    return (
+        base_output_dir
+        / f"shard_{args.job_shard_index:02d}_of_{args.job_shards:02d}"
+    )
+
+
+def shard_jobs(
+    jobs: list[tuple[Variant, str, Any, int]], args: argparse.Namespace
+) -> list[tuple[Variant, str, Any, int]]:
+    """Select this process's deterministic shard of the planned jobs."""
+    if args.job_shards == 1:
+        return jobs
+    return [
+        job
+        for index, job in enumerate(jobs)
+        if index % args.job_shards == args.job_shard_index
+    ]
 
 
 @contextlib.contextmanager
@@ -922,6 +1042,7 @@ def write_manifest(
     seeds: Iterable[int],
     settings: Iterable[Any],
     total_jobs: int,
+    total_jobs_before_sharding: int,
     completed_jobs: int,
 ) -> None:
     """Write the run manifest."""
@@ -929,12 +1050,14 @@ def write_manifest(
         "created_at_utc": utc_now(),
         "argv": sys.argv,
         "project_root": str(root),
-        "model_config": MODEL_CONFIG,
+        "default_model_config": MODEL_CONFIG,
+        "local_winner_model_config": LOCAL_WINNER_MODEL_CONFIG,
         "args": vars(args),
         "variants": [
             {
                 "name": variant.name,
                 "description": variant.description,
+                "model_config": variant.model_config or MODEL_CONFIG,
                 "overrides": list(variant.overrides),
             }
             for variant in variants
@@ -952,6 +1075,9 @@ def write_manifest(
             for setting in settings
         ],
         "total_jobs": total_jobs,
+        "total_jobs_before_sharding": total_jobs_before_sharding,
+        "job_shards": args.job_shards,
+        "job_shard_index": args.job_shard_index,
         "completed_jobs_at_start": completed_jobs,
     }
     (output_dir / "manifest.json").write_text(
@@ -991,7 +1117,11 @@ def print_available_variants() -> None:
     print("\nVariants:")
     for name, variant in VARIANTS.items():
         overrides = ", ".join(variant.overrides) or "(no overrides)"
-        print(f"  {name}: {variant.description}; {overrides}")
+        model_config = variant.model_config or MODEL_CONFIG
+        print(
+            f"  {name}: {variant.description}; "
+            f"model={model_config}; {overrides}"
+        )
 
 
 def write_summary(output_dir: Path) -> None:

@@ -246,6 +246,9 @@ def select_neighborhoods_of_interest(connectivity, neighborhoods):
 
     useful_connectivity = {}
     for neighborhood in neighborhoods:
+        if neighborhood in connectivity:
+            useful_connectivity[neighborhood] = connectivity[neighborhood]
+            continue
         src_rank = int(neighborhood.split("-")[-1])
         try:
             if (

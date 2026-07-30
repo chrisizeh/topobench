@@ -70,3 +70,40 @@ def test_triangle_clique_lifting_handles_graphs_without_triangles():
     assert lifted.x_2.shape == (0, 2)
     assert lifted.incidence_2.shape == (2, 0)
     assert lifted.structure_2.shape == (0, 4)
+
+
+def test_triangle_clique_lifting_adds_latent_rank3_knn_neighborhoods():
+    """Latent rank-3 cells induce node-region neighborhoods through triangles."""
+    data = Data(
+        x=torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.9, 0.1],
+                [1.0, 0.2],
+                [0.0, 1.0],
+                [0.1, 0.9],
+            ]
+        ),
+        edge_index=_undirected_edge_index(
+            [(0, 1), (1, 2), (0, 2), (2, 3), (3, 4), (2, 4)]
+        ),
+    )
+    lifting = GraphTriangleCliqueCCLifting(
+        complex_dim=3,
+        latent_rank3_cells=2,
+        neighborhoods=[
+            "3-up_incidence-0",
+            "3-down_incidence-3",
+            "up_incidence-2",
+            "down_incidence-3",
+        ],
+    )
+
+    lifted = lifting(data)
+
+    assert lifted.x_3.shape == (2, 2)
+    assert lifted.structure_3.shape == (2, 4)
+    assert lifted.incidence_3.shape == (2, 2)
+    assert lifted["3-up_incidence-0"].shape == (2, 5)
+    assert lifted["3-down_incidence-3"].shape == (5, 2)
+    assert bool((lifted["3-up_incidence-0"].to_dense().sum(dim=0) > 0).all())

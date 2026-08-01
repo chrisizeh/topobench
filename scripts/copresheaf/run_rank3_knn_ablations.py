@@ -72,8 +72,16 @@ TASKS: dict[str, tuple[str, str]] = {
 
 PILOT_SETTING_KEYS: tuple[tuple[str, str, str], ...] = (
     ("h_mid", "d_lo", "pl_lo"),
+    ("h_mid", "d_lo", "pl_hi"),
     ("h_mid", "d_hi", "pl_lo"),
+    ("h_mid", "d_hi", "pl_hi"),
+    ("h_hi", "d_lo", "pl_lo"),
     ("h_hi", "d_lo", "pl_hi"),
+    ("h_hi", "d_hi", "pl_lo"),
+    ("h_hi", "d_hi", "pl_hi"),
+    ("h_lo", "d_lo", "pl_lo"),
+    ("h_lo", "d_lo", "pl_hi"),
+    ("h_lo", "d_hi", "pl_lo"),
     ("h_lo", "d_hi", "pl_hi"),
 )
 
@@ -94,142 +102,39 @@ VARIANTS: dict[str, Variant] = {
         description="previous local winner: dim-2 triangle-clique gate2 model",
         model_config=LOCAL_WINNER_MODEL_CONFIG,
     ),
-    "base": Variant(
-        name="base",
-        description="new rank-3 kNN config unchanged",
-    ),
     "rank3_cells2": Variant(
-        name="rank3_cells2",
+        name="rank3_cells32",
         description="smaller latent rank-3 cover",
         overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_cells=2",
-        ),
-    ),
-    "rank3_cells8": Variant(
-        name="rank3_cells8",
-        description="larger latent rank-3 cover",
-        overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_cells=8",
-        ),
-    ),
-    "rank3_membership2": Variant(
-        name="rank3_membership2",
-        description="soft-assign every node to two latent rank-3 cells",
-        overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_memberships=2",
-        ),
-    ),
-    "rank3_temp05": Variant(
-        name="rank3_temp05",
-        description="sharper rank-3 assignment weights",
-        overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_assignment_temperature=0.5",
-        ),
-    ),
-    "rank3_temp2": Variant(
-        name="rank3_temp2",
-        description="smoother rank-3 assignment weights",
-        overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_assignment_temperature=2.0",
-        ),
-    ),
-    "rank3_iters4": Variant(
-        name="rank3_iters4",
-        description="fewer deterministic k-means refinement steps",
-        overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_iterations=4",
-        ),
-    ),
-    "rank3_iters16": Variant(
-        name="rank3_iters16",
-        description="more deterministic k-means refinement steps",
-        overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_iterations=16",
-        ),
-    ),
-    "rank3_structure_only": Variant(
-        name="rank3_structure_only",
-        description="cluster rank-3 cells using degree/clustering only",
-        overrides=(
+            "transforms.graph2combinatorial_lifting.latent_rank3_cells=64",
             "transforms.graph2combinatorial_lifting.latent_rank3_features=structure",
         ),
     ),
-    "rank3_features_only": Variant(
-        name="rank3_features_only",
-        description="cluster rank-3 cells using node features only",
+    "rank3_cells8": Variant(
+        name="rank3_cells64",
+        description="larger latent rank-3 cover",
         overrides=(
+            "transforms.graph2combinatorial_lifting.latent_rank3_cells=16",
+            "transforms.graph2combinatorial_lifting.latent_rank3_features=structure",
+        ),
+    ),
+    "rank3_cells2": Variant(
+        name="rank3_cells_features_32",
+        description="smaller latent rank-3 cover",
+        overrides=(
+            "transforms.graph2combinatorial_lifting.latent_rank3_cells=32",
             "transforms.graph2combinatorial_lifting.latent_rank3_features=features",
         ),
     ),
-    "rank3_direct_routes": Variant(
-        name="rank3_direct_routes",
-        description="use direct node-to-region routes instead of incidence-chain routes",
+    "rank3_cells8": Variant(
+        name="rank3_cells64_features",
+        description="larger latent rank-3 cover",
         overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_direct_node_routes=true",
+            "transforms.graph2combinatorial_lifting.latent_rank3_cells=64",
+            "transforms.graph2combinatorial_lifting.latent_rank3_features=features",
         ),
     ),
-    "rank3_cells8_membership2": Variant(
-        name="rank3_cells8_membership2",
-        description="larger cover with two memberships per node",
-        overrides=(
-            "transforms.graph2combinatorial_lifting.latent_rank3_cells=8",
-            "transforms.graph2combinatorial_lifting.latent_rank3_memberships=2",
-        ),
-    ),
-    "depth2": Variant(
-        name="depth2",
-        description="shallower copresheaf backbone",
-        overrides=("model.backbone.num_layers=2",),
-    ),
-    "depth4": Variant(
-        name="depth4",
-        description="deeper copresheaf backbone",
-        overrides=("model.backbone.num_layers=4",),
-    ),
-    "gate_init_neg3": Variant(
-        name="gate_init_neg3",
-        description="more conservative message gates at initialization",
-        overrides=("model.backbone.message_gate_init=-3.0",),
-    ),
-    "gate_init_neg1": Variant(
-        name="gate_init_neg1",
-        description="more open message gates at initialization",
-        overrides=("model.backbone.message_gate_init=-1.0",),
-    ),
-    "heads2": Variant(
-        name="heads2",
-        description="fewer heads, wider stalks; keeps hidden dimension 64",
-        overrides=(
-            "model.backbone.heads=2",
-            "model.backbone.stalk_dimension=32",
-        ),
-    ),
-    "heads8": Variant(
-        name="heads8",
-        description="more heads, narrower stalks; keeps hidden dimension 64",
-        overrides=(
-            "model.backbone.heads=8",
-            "model.backbone.stalk_dimension=8",
-        ),
-    ),
-    "mean_neighborhood_aggr": Variant(
-        name="mean_neighborhood_aggr",
-        description="replace learned neighborhood gates with mean aggregation",
-        overrides=("model.backbone.neighborhood_aggr=mean",),
-    ),
-    "no_route_self_bias": Variant(
-        name="no_route_self_bias",
-        description="remove route-map self-bias",
-        overrides=("model.backbone.route_self_bias=0.0",),
-    ),
-    "depth4_gate_init_neg3": Variant(
-        name="depth4_gate_init_neg3",
-        description="deeper backbone with more conservative initial gates",
-        overrides=(
-            "model.backbone.num_layers=4",
-            "model.backbone.message_gate_init=-3.0",
-        ),
-    ),
+
 }
 
 VARIANT_SETS: dict[str, tuple[str, ...]] = {

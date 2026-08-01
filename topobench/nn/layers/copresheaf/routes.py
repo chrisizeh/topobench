@@ -17,7 +17,18 @@ class CopresheafRoute:
 
     @classmethod
     def from_neighborhood(cls, neighborhood: str) -> "CopresheafRoute":
-        """Parse a TopoBench neighborhood name into its directed ranks."""
+        """Parse a TopoBench neighborhood name into its directed ranks.
+
+        Parameters
+        ----------
+        neighborhood : str
+            TopoBench neighborhood name, for example ``up_incidence-0``.
+
+        Returns
+        -------
+        CopresheafRoute
+            The route induced by the named neighborhood.
+        """
         try:
             source_rank, target_rank = get_routes_from_neighborhoods(
                 [neighborhood]
@@ -36,6 +47,18 @@ class CopresheafRoute:
         TopoBench's selected neighborhood matrices consistently store target
         cells on rows and source cells on columns. The returned PyG-style
         index therefore reverses the matrix indices.
+
+        Parameters
+        ----------
+        connectivity : torch.Tensor
+            Sparse or dense neighborhood matrix with target cells on rows
+            and source cells on columns.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            A ``[2, num_edges]`` PyG-style ``(source, target)`` edge index
+            and the corresponding edge weights.
         """
         if not connectivity.is_sparse:
             connectivity = connectivity.to_sparse()

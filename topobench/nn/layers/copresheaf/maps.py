@@ -60,6 +60,17 @@ class BaseCopresheafMap(nn.Module, ABC):
         )
 
     def _validate(self, source: torch.Tensor, target: torch.Tensor) -> None:
+        """Validate that edge features have a compatible shape.
+
+        Parameters
+        ----------
+        source : torch.Tensor
+            Source-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        target : torch.Tensor
+            Target-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        """
         if source.ndim != 2 or target.ndim != 2:
             raise ValueError(
                 "source and target features must be rank-2 tensors"
@@ -74,6 +85,19 @@ class BaseCopresheafMap(nn.Module, ABC):
             )
 
     def _eye(self, num_edges: int) -> torch.Tensor:
+        """Broadcast the stored identity to a batch of edges.
+
+        Parameters
+        ----------
+        num_edges : int
+            Number of directed edges to broadcast the identity over.
+
+        Returns
+        -------
+        torch.Tensor
+            Identity transport of shape
+            ``[num_edges, heads, stalk_dimension, stalk_dimension]``.
+        """
         return self.identity.expand(
             num_edges,
             self.heads,
@@ -85,7 +109,23 @@ class BaseCopresheafMap(nn.Module, ABC):
     def forward(
         self, source: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
-        """Construct a transport matrix for each directed edge."""
+        """Construct a transport matrix for each directed edge.
+
+        Parameters
+        ----------
+        source : torch.Tensor
+            Source-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        target : torch.Tensor
+            Target-cell features for each edge, shape
+            ``[num_edges, channels]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Transport tensor of shape
+            ``[num_edges, heads, stalk_dimension, stalk_dimension]``.
+        """
 
 
 class IdentityCopresheafMap(BaseCopresheafMap):
@@ -98,6 +138,23 @@ class IdentityCopresheafMap(BaseCopresheafMap):
     def forward(
         self, source: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
+        """Return the identity transport for each edge.
+
+        Parameters
+        ----------
+        source : torch.Tensor
+            Source-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        target : torch.Tensor
+            Target-cell features for each edge, shape
+            ``[num_edges, channels]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Identity transport of shape
+            ``[num_edges, heads, stalk_dimension, stalk_dimension]``.
+        """
         self._validate(source, target)
         return self._eye(source.size(0))
 
@@ -107,6 +164,17 @@ class DiagonalCopresheafMap(BaseCopresheafMap):
 
     This is the map used by the CopresheafGCN and CopresheafSAGE
     experiments in Section 6.2 of the CTNN paper.
+
+    Parameters
+    ----------
+    *args : tuple
+        Positional arguments forwarded to
+        :class:`BaseCopresheafMap`.
+    init_std : float, optional
+        Standard deviation used to initialize the linear layer's
+        weights. By default, ``0.01``.
+    **kwargs : dict
+        Keyword arguments forwarded to :class:`BaseCopresheafMap`.
     """
 
     def __init__(self, *args, init_std: float = 0.01, **kwargs) -> None:
@@ -118,6 +186,23 @@ class DiagonalCopresheafMap(BaseCopresheafMap):
     def forward(
         self, source: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
+        """Construct a diagonal identity-plus-perturbation transport.
+
+        Parameters
+        ----------
+        source : torch.Tensor
+            Source-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        target : torch.Tensor
+            Target-cell features for each edge, shape
+            ``[num_edges, channels]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Transport tensor of shape
+            ``[num_edges, heads, stalk_dimension, stalk_dimension]``.
+        """
         self._validate(source, target)
         pair = torch.cat((target, source), dim=-1)
         diagonal = torch.tanh(self.linear(pair)).view(
@@ -132,6 +217,17 @@ class FullCopresheafMap(BaseCopresheafMap):
 
     The zero initialization makes every map initially equal to the identity,
     as prescribed for the SheafFC family in the paper's map catalogue.
+
+    Parameters
+    ----------
+    *args : tuple
+        Positional arguments forwarded to
+        :class:`BaseCopresheafMap`.
+    zero_init : bool, optional
+        Whether to zero-initialize the linear layer so every map
+        starts as the identity. By default, ``True``.
+    **kwargs : dict
+        Keyword arguments forwarded to :class:`BaseCopresheafMap`.
     """
 
     def __init__(self, *args, zero_init: bool = True, **kwargs) -> None:
@@ -145,6 +241,23 @@ class FullCopresheafMap(BaseCopresheafMap):
     def forward(
         self, source: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
+        """Construct a full identity-plus-perturbation transport.
+
+        Parameters
+        ----------
+        source : torch.Tensor
+            Source-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        target : torch.Tensor
+            Target-cell features for each edge, shape
+            ``[num_edges, channels]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Transport tensor of shape
+            ``[num_edges, heads, stalk_dimension, stalk_dimension]``.
+        """
         self._validate(source, target)
         pair = torch.cat((target, source), dim=-1)
         delta = torch.tanh(self.linear(pair)).view(
@@ -161,6 +274,17 @@ class SharedLocalCopresheafMap(BaseCopresheafMap):
 
     This implements the CT-SharedLoc option from Section 6.3:
     :math:`\rho=I+\sigma(g(h_x,h_y))\Delta(h_x,h_y)`.
+
+    Parameters
+    ----------
+    *args : tuple
+        Positional arguments forwarded to
+        :class:`BaseCopresheafMap`.
+    hidden_channels : int, optional
+        Width of the hidden layer in the map and gate MLPs. By
+        default, ``channels``.
+    **kwargs : dict
+        Keyword arguments forwarded to :class:`BaseCopresheafMap`.
     """
 
     def __init__(self, *args, hidden_channels: int | None = None, **kwargs):
@@ -184,6 +308,23 @@ class SharedLocalCopresheafMap(BaseCopresheafMap):
     def forward(
         self, source: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
+        """Construct a gated identity-plus-perturbation transport.
+
+        Parameters
+        ----------
+        source : torch.Tensor
+            Source-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        target : torch.Tensor
+            Target-cell features for each edge, shape
+            ``[num_edges, channels]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Transport tensor of shape
+            ``[num_edges, heads, stalk_dimension, stalk_dimension]``.
+        """
         self._validate(source, target)
         pair = torch.cat((target, source), dim=-1)
         delta = torch.tanh(self.map_mlp(pair)).view(
@@ -202,6 +343,17 @@ class OuterProductCopresheafMap(BaseCopresheafMap):
     Per head, :math:`\rho=I+\tanh((W_qh_x)(W_kh_y)^\top)`. The map is a
     residualized version of the outer-product family used in the paper's
     physics experiments, which keeps deep stacks stable at initialization.
+
+    Parameters
+    ----------
+    *args : tuple
+        Positional arguments forwarded to
+        :class:`BaseCopresheafMap`.
+    residual : bool, optional
+        Whether to add the identity to the outer-product term. By
+        default, ``True``.
+    **kwargs : dict
+        Keyword arguments forwarded to :class:`BaseCopresheafMap`.
     """
 
     def __init__(self, *args, residual: bool = True, **kwargs) -> None:
@@ -213,6 +365,27 @@ class OuterProductCopresheafMap(BaseCopresheafMap):
     def forward(
         self, source: torch.Tensor, target: torch.Tensor
     ) -> torch.Tensor:
+        """Construct an outer-product transport for each edge.
+
+        Adds the identity to the outer-product term when
+        ``self.residual`` is ``True``; otherwise returns the
+        outer-product term unmodified.
+
+        Parameters
+        ----------
+        source : torch.Tensor
+            Source-cell features for each edge, shape
+            ``[num_edges, channels]``.
+        target : torch.Tensor
+            Target-cell features for each edge, shape
+            ``[num_edges, channels]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Transport tensor of shape
+            ``[num_edges, heads, stalk_dimension, stalk_dimension]``.
+        """
         self._validate(source, target)
         query = self.query(target).view(-1, self.heads, self.stalk_dimension)
         key = self.key(source).view(-1, self.heads, self.stalk_dimension)
@@ -233,7 +406,21 @@ COPRESHEAF_MAPS = {
 
 
 def create_copresheaf_map(map_type: str, **kwargs) -> BaseCopresheafMap:
-    """Create a copresheaf map from its configuration name."""
+    """Create a copresheaf map from its configuration name.
+
+    Parameters
+    ----------
+    map_type : str
+        One of ``COPRESHEAF_MAPS``, for example ``"diagonal"`` or ``"full"``.
+    **kwargs : dict
+        Constructor arguments forwarded to the selected map class, for
+        example ``channels``, ``heads``, and ``stalk_dimension``.
+
+    Returns
+    -------
+    BaseCopresheafMap
+        The instantiated map module.
+    """
     try:
         map_class = COPRESHEAF_MAPS[map_type.lower()]
     except KeyError as error:

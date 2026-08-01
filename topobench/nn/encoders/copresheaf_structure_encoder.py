@@ -16,6 +16,26 @@ class CopresheafStructureFeatureEncoder(AbstractFeatureEncoder):
     and upper incidence degree. Keeping these separate from ``x_{rank}``
     preserves TopoBench's input-channel inference while allowing the model to
     retain multiplicity information lost by mean feature projection.
+
+    Parameters
+    ----------
+    in_channels : list[int]
+        Input feature dimension for each cell rank, before any
+        structural channels are appended.
+    out_channels : int
+        Output feature dimension shared by every encoded rank.
+    structure_channels : int, optional
+        Number of columns in each ``structure_{rank}`` tensor
+        (default: 4).
+    proj_dropout : float, optional
+        Dropout used inside each per-rank ``BaseEncoder`` (default: 0.0).
+    selected_dimensions : list[int], optional
+        Cell ranks to encode (default: all ranks in ``in_channels``).
+    use_structure : bool, optional
+        If ``True``, concatenate the structural statistics to the raw
+        features before projecting (default: True).
+    **kwargs : dict, optional
+        Additional keyword arguments.
     """
 
     def __init__(
@@ -53,7 +73,20 @@ class CopresheafStructureFeatureEncoder(AbstractFeatureEncoder):
     def forward(
         self, data: torch_geometric.data.Data
     ) -> torch_geometric.data.Data:
-        """Encode every selected cell rank in place."""
+        """Encode every selected cell rank in place.
+
+        Parameters
+        ----------
+        data : torch_geometric.data.Data
+            Input data object which should contain ``x_{rank}`` and,
+            when ``use_structure`` is set, ``structure_{rank}``
+            features for each selected rank.
+
+        Returns
+        -------
+        torch_geometric.data.Data
+            Data object with updated ``x_{rank}`` features.
+        """
         if not hasattr(data, "x_0"):
             data.x_0 = data.x
         for rank in self.dimensions:

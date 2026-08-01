@@ -21,6 +21,31 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
     contains one cell for every graph triangle. The lift gives the submitted
     copresheaf model a deterministic topological domain while keeping the
     preprocessing small and easy to audit.
+
+    Parameters
+    ----------
+    latent_rank3_cells : int, optional
+        Number of latent rank-3 cells to add on top of the triangle
+        complex. A value of ``0`` (default) disables rank-3 cells.
+    latent_rank3_memberships : int, optional
+        Number of nearest latent regions each node is softly
+        assigned to when building rank-3 memberships (default:
+        ``1``).
+    latent_rank3_iterations : int, optional
+        Number of k-means-style refinement steps used to place the
+        latent region centers (default: ``8``).
+    latent_rank3_assignment_temperature : float, optional
+        Temperature used to turn negative center distances into
+        softmax membership weights (default: ``1.0``).
+    latent_rank3_features : str, optional
+        Descriptors used to build latent regions: one of
+        ``"features"``, ``"structure"``, or ``"features_structure"``
+        (default: ``"features_structure"``).
+    latent_rank3_direct_node_routes : bool, optional
+        If ``True``, also add direct rank-3 to rank-0 incidence
+        tensors for ablations (default: ``False``).
+    **kwargs : optional
+        Additional arguments for the base lifting class.
     """
 
     def __init__(
@@ -67,10 +92,25 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
     def lift_topology(
         self, data: torch_geometric.data.Data
     ) -> torch_geometric.data.Data | dict:
-        """Lift one graph into a triangle combinatorial complex."""
+        """Lift one graph into a triangle combinatorial complex.
+
+        Parameters
+        ----------
+        data : torch_geometric.data.Data
+            The input graph data, expected to carry undirected edges
+            and node features ``data.x``.
+
+        Returns
+        -------
+        dict
+            The lifted topology: rank-0/1/2 (and optional rank-3)
+            connectivity, node features, and structural features.
+        """
         graph = self._generate_graph_from_data(data)
         if graph.is_directed():
-            raise ValueError("GraphTriangleCliqueCCLifting expects undirected graphs")
+            raise ValueError(
+                "GraphTriangleCliqueCCLifting expects undirected graphs"
+            )
 
         combinatorial_complex = CombinatorialComplex(graph)
         for triangle in self._triangles(graph):
@@ -105,7 +145,19 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
 
     @staticmethod
     def _triangles(graph: nx.Graph) -> list[tuple[int, int, int]]:
-        """Return sorted node triples that form graph triangles."""
+        """Return sorted node triples that form graph triangles.
+
+        Parameters
+        ----------
+        graph : nx.Graph
+            The input undirected graph.
+
+        Returns
+        -------
+        list of tuple of int
+            Sorted node triples, one per triangle (3-clique) found
+            in ``graph``.
+        """
         triangles = set()
         for clique in nx.enumerate_all_cliques(graph):
             if len(clique) < 3:
@@ -116,7 +168,20 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
         return sorted(triangles)
 
     def _connectivity(self, combinatorial_complex) -> dict[str, torch.Tensor]:
-        """Return raw connectivity plus configured TopoBench neighborhoods."""
+        """Return the raw rank-0/1/2 connectivity of a complex.
+
+        Parameters
+        ----------
+        combinatorial_complex : CombinatorialComplex
+            The complex whose connectivity tensors are computed.
+
+        Returns
+        -------
+        dict
+            Connectivity tensors (incidence, adjacency, and
+            Laplacian matrices) for ranks ``0`` through
+            ``self.complex_dim``.
+        """
         connectivity = get_combinatorial_complex_connectivity(
             combinatorial_complex,
             self.complex_dim,
@@ -139,6 +204,31 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
         They attach to rank-2 triangles; long ``0 <-> 3`` neighborhoods are
         then induced by the incidence chain unless direct node-region routes
         are explicitly requested for ablations.
+
+        Parameters
+        ----------
+        data : torch_geometric.data.Data
+            The input graph data, used to build node descriptors.
+        graph : nx.Graph
+            The input undirected graph, used to build node
+            descriptors.
+        connectivity : dict
+            Rank-0/1/2 connectivity tensors, including
+            ``"incidence_1"``, ``"incidence_2"``, and ``"shape"``.
+        dtype : torch.dtype
+            Dtype used for the returned rank-3 tensors.
+        device : torch.device
+            Device used for the returned rank-3 tensors.
+
+        Returns
+        -------
+        dict
+            Rank-3 tensors: updated ``"shape"``, ``"incidence_3"``,
+            empty ``"adjacency_3"``, ``"coadjacency_3"``,
+            ``"down_laplacian_3"``, ``"up_laplacian_3"``, and
+            ``"hodge_laplacian_3"``, plus direct node-region
+            incidence tensors when
+            ``latent_rank3_direct_node_routes`` is enabled.
         """
         if self.complex_dim < 3:
             raise ValueError(
@@ -180,16 +270,30 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
             ),
         }
         if self.latent_rank3_direct_node_routes:
-            output["3-up_incidence-0"] = self._dense_to_sparse(
-                membership.t()
-            )
+            output["3-up_incidence-0"] = self._dense_to_sparse(membership.t())
             output["3-down_incidence-3"] = self._dense_to_sparse(membership)
         return output
 
     def _latent_node_membership(
         self, data: torch_geometric.data.Data, graph: nx.Graph
     ) -> torch.Tensor:
-        """Return node-to-latent-region membership weights."""
+        """Return node-to-latent-region membership weights.
+
+        Parameters
+        ----------
+        data : torch_geometric.data.Data
+            The input graph data, used to build node descriptors.
+        graph : nx.Graph
+            The input undirected graph, used to build node
+            descriptors.
+
+        Returns
+        -------
+        torch.Tensor
+            A dense ``(num_nodes, latent_rank3_cells)`` tensor whose
+            rows hold softmax weights over each node's nearest
+            latent regions.
+        """
         num_nodes = int(data.x.size(0))
         num_rank3 = self.latent_rank3_cells
         if num_nodes == 0:
@@ -213,9 +317,7 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
             num_rank3,
             num_nodes,
         )
-        nearest = distances.topk(
-            memberships, largest=False, dim=1
-        )
+        nearest = distances.topk(memberships, largest=False, dim=1)
         weights = torch.softmax(
             -nearest.values / self.latent_rank3_assignment_temperature,
             dim=1,
@@ -227,7 +329,25 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
     def _node_descriptors(
         self, data: torch_geometric.data.Data, graph: nx.Graph
     ) -> torch.Tensor:
-        """Build unsupervised descriptors for latent KNN regions."""
+        """Build unsupervised descriptors for latent KNN regions.
+
+        Parameters
+        ----------
+        data : torch_geometric.data.Data
+            The input graph data; ``data.x`` is used when
+            ``latent_rank3_features`` includes node features.
+        graph : nx.Graph
+            The input undirected graph; node degree and clustering
+            coefficient are used when ``latent_rank3_features``
+            includes structural descriptors.
+
+        Returns
+        -------
+        torch.Tensor
+            A ``(num_nodes, num_descriptors)`` tensor of per-node
+            descriptors, standardized to zero mean and unit
+            variance.
+        """
         parts = []
         if self.latent_rank3_features in {"features", "features_structure"}:
             parts.append(data.x.float())
@@ -238,10 +358,7 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
                 device=data.x.device,
             )
             clustering = torch.tensor(
-                [
-                    float(nx.clustering(graph, node))
-                    for node in graph.nodes()
-                ],
+                [float(nx.clustering(graph, node)) for node in graph.nodes()],
                 dtype=torch.float,
                 device=data.x.device,
             )
@@ -257,13 +374,32 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
     def _initial_centers(
         descriptors: torch.Tensor, num_centers: int
     ) -> torch.Tensor:
-        """Deterministically initialize centers by farthest-point sampling."""
+        """Deterministically initialize centers by farthest-point sampling.
+
+        Parameters
+        ----------
+        descriptors : torch.Tensor
+            A ``(num_nodes, num_descriptors)`` tensor of per-node
+            descriptors.
+        num_centers : int
+            Number of centers to select.
+
+        Returns
+        -------
+        torch.Tensor
+            A ``(num_centers, num_descriptors)`` tensor of initial
+            center coordinates.
+        """
         num_nodes = descriptors.size(0)
         centers = descriptors.new_zeros((num_centers, descriptors.size(1)))
-        first = torch.cdist(
-            descriptors,
-            descriptors.mean(dim=0, keepdim=True),
-        ).squeeze(-1).argmax()
+        first = (
+            torch.cdist(
+                descriptors,
+                descriptors.mean(dim=0, keepdim=True),
+            )
+            .squeeze(-1)
+            .argmax()
+        )
         chosen = [int(first)]
         centers[0] = descriptors[chosen[0]]
         min_dist = torch.cdist(descriptors, centers[:1]).squeeze(-1)
@@ -274,9 +410,9 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
                 centers[idx] = descriptors[next_idx]
                 min_dist = torch.minimum(
                     min_dist,
-                    torch.cdist(
-                        descriptors, centers[idx : idx + 1]
-                    ).squeeze(-1),
+                    torch.cdist(descriptors, centers[idx : idx + 1]).squeeze(
+                        -1
+                    ),
                 )
             else:
                 centers[idx] = descriptors[chosen[idx % len(chosen)]]
@@ -288,32 +424,57 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
         node_membership: torch.Tensor,
         num_rank2: int,
     ) -> torch.Tensor:
-        """Average node memberships over every rank-2 triangle."""
+        """Average node memberships over every rank-2 triangle.
+
+        Parameters
+        ----------
+        connectivity : dict
+            Rank-0/1/2 connectivity tensors, including
+            ``"incidence_1"`` and ``"incidence_2"``.
+        node_membership : torch.Tensor
+            A ``(num_nodes, latent_rank3_cells)`` tensor of node-to-
+            latent-region membership weights.
+        num_rank2 : int
+            Number of rank-2 triangle cells.
+
+        Returns
+        -------
+        torch.Tensor
+            A ``(num_rank2, latent_rank3_cells)`` tensor with each
+            triangle's node memberships averaged over its incident
+            nodes.
+        """
         if num_rank2 == 0:
-            return node_membership.new_zeros(
-                (0, self.latent_rank3_cells)
-            )
+            return node_membership.new_zeros((0, self.latent_rank3_cells))
         incidence_1 = connectivity["incidence_1"].to(
             device=node_membership.device
         )
         incidence_2 = connectivity["incidence_2"].to(
             device=node_membership.device
         )
-        edge_to_triangle = incidence_2.to_dense().abs().to(
-            node_membership.dtype
+        edge_to_triangle = (
+            incidence_2.to_dense().abs().to(node_membership.dtype)
         )
-        node_to_edge = incidence_1.to_dense().abs().to(
-            node_membership.dtype
-        )
-        node_to_triangle = (
-            node_to_edge @ edge_to_triangle
-        ).clamp_max(1.0)
+        node_to_edge = incidence_1.to_dense().abs().to(node_membership.dtype)
+        node_to_triangle = (node_to_edge @ edge_to_triangle).clamp_max(1.0)
         counts = node_to_triangle.sum(dim=0).clamp_min(1.0).unsqueeze(-1)
         return node_to_triangle.t() @ node_membership / counts
 
     @staticmethod
     def _dense_to_sparse(matrix: torch.Tensor) -> torch.Tensor:
-        """Convert a dense matrix to a coalesced sparse tensor."""
+        """Convert a dense matrix to a coalesced sparse tensor.
+
+        Parameters
+        ----------
+        matrix : torch.Tensor
+            The dense matrix to convert.
+
+        Returns
+        -------
+        torch.Tensor
+            A coalesced sparse COO tensor with the same shape,
+            device, and non-zero values as ``matrix``.
+        """
         indices = matrix.nonzero(as_tuple=False).t()
         if indices.numel() == 0:
             return torch.sparse_coo_tensor(
@@ -338,7 +499,25 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
         dtype: torch.dtype,
         device: torch.device,
     ) -> torch.Tensor:
-        """Return an empty sparse matrix with stable dtype/device."""
+        """Return an empty sparse matrix with stable dtype/device.
+
+        Parameters
+        ----------
+        rows : int
+            Number of rows of the returned matrix.
+        columns : int
+            Number of columns of the returned matrix.
+        dtype : torch.dtype
+            Dtype of the returned matrix's values.
+        device : torch.device
+            Device of the returned matrix.
+
+        Returns
+        -------
+        torch.Tensor
+            A coalesced sparse COO tensor of shape
+            ``(rows, columns)`` with no non-zero entries.
+        """
         return torch.sparse_coo_tensor(
             torch.zeros((2, 0), dtype=torch.long, device=device),
             torch.zeros((0,), dtype=dtype, device=device),
@@ -353,7 +532,27 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
         dtype: torch.dtype,
         device: torch.device,
     ) -> dict[str, torch.Tensor]:
-        """Compute scale-stable size/degree features for every represented rank."""
+        """Compute scale-stable size/degree features per complex rank.
+
+        Parameters
+        ----------
+        connectivity : dict
+            Rank connectivity tensors, including ``"shape"`` and,
+            for each rank, ``"incidence_{rank}"`` and
+            ``"adjacency_{rank}"``.
+        dtype : torch.dtype
+            Dtype used for the returned feature tensors.
+        device : torch.device
+            Device used for the returned feature tensors.
+
+        Returns
+        -------
+        dict
+            A ``"structure_{rank}"`` tensor for every rank from
+            ``0`` to ``self.complex_dim``, each stacking log1p-
+            scaled cell size, lower degree, same-rank degree, and
+            upper degree.
+        """
         shape = list(connectivity["shape"])
         output = {}
         node_membership = None
@@ -368,8 +567,8 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
                     num_cells, dtype=dtype, device=device
                 )
             else:
-                incidence = connectivity[f"incidence_{rank}"].coalesce().to(
-                    device
+                incidence = (
+                    connectivity[f"incidence_{rank}"].coalesce().to(device)
                 )
                 lower_degree = self._fit_length(
                     torch.sparse.sum(incidence, dim=0).to_dense().to(dtype),
@@ -381,8 +580,7 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
                     )
                 else:
                     node_membership = (
-                        node_membership
-                        @ incidence.to_dense().abs().to(dtype)
+                        node_membership @ incidence.to_dense().abs().to(dtype)
                     ).clamp_max(1)
                 cell_size = node_membership.sum(0)
 
@@ -392,11 +590,13 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
                 num_cells,
             )
             if rank < self.complex_dim:
-                upper_incidence = connectivity[
-                    f"incidence_{rank + 1}"
-                ].coalesce().to(device)
+                upper_incidence = (
+                    connectivity[f"incidence_{rank + 1}"].coalesce().to(device)
+                )
                 upper_degree = self._fit_length(
-                    torch.sparse.sum(upper_incidence, dim=1).to_dense().to(dtype),
+                    torch.sparse.sum(upper_incidence, dim=1)
+                    .to_dense()
+                    .to(dtype),
                     num_cells,
                 )
             else:
@@ -417,7 +617,22 @@ class GraphTriangleCliqueCCLifting(Graph2CombinatorialLifting):
 
     @staticmethod
     def _fit_length(values: torch.Tensor, length: int) -> torch.Tensor:
-        """Trim TopoNetX placeholder degrees or pad missing degrees."""
+        """Trim TopoNetX placeholder degrees or pad missing degrees.
+
+        Parameters
+        ----------
+        values : torch.Tensor
+            A 1-D tensor of degree values to resize.
+        length : int
+            Target number of entries.
+
+        Returns
+        -------
+        torch.Tensor
+            ``values`` trimmed to ``length`` entries, or right-
+            padded with zeros if it has fewer than ``length``
+            entries.
+        """
         if values.numel() == length:
             return values
         if values.numel() > length:

@@ -1,4 +1,12 @@
-"""Higher-order copresheaf message passing on combinatorial complexes."""
+"""Higher-order copresheaf message passing on combinatorial complexes.
+
+Implements Copresheaf Topological Neural Networks (CTNNs) [1].
+
+[1] Hajij et al. "Copresheaf Topological Neural Networks: A Generalized
+Deep Learning Framework." Advances in Neural Information Processing
+Systems (NeurIPS), 2025.
+https://proceedings.neurips.cc/paper_files/paper/2025/file/dc62cd4ec77f3bbec8e6245d0bd91d08-Paper-Conference.pdf
+"""
 
 from collections.abc import Mapping, Sequence
 
@@ -18,8 +26,8 @@ class CopresheafCC(nn.Module):
     Every route gets its own learned maps :math:`\rho_{y\to x}` and message
     function, while messages arriving at the same rank are combined before a
     rank-specific update. This realizes the message-passing form in
-    Definitions 9--10 of Copresheaf Topological Neural Networks
-    (arXiv:2505.21251).
+    Definitions 9--10 of Copresheaf Topological Neural Networks [1]
+    (NeurIPS 2025).
 
     Parameters
     ----------
@@ -31,12 +39,56 @@ class CopresheafCC(nn.Module):
         Output feature dimension for every represented rank.
     neighborhoods : sequence of str
         TopoBench neighborhood names, for example ``up_incidence-0``.
+    num_layers : int, optional
+        Number of stacked ``HigherOrderCopresheafLayer`` blocks. Must be
+        at least one (default: 3).
+    heads : int, optional
+        Number of independent stalk bundles per route. Mutually
+        exclusive with ``num_heads``; leave at the default when passing
+        ``num_heads`` instead (default: 1).
+    stalk_dimension : int, optional
+        Dimension of one per-head stalk. By default,
+        ``hidden_channels // heads``.
     map_type : str or mapping
         One map family for all routes or a neighborhood-to-family mapping.
+    aggr : str, optional
+        Per-edge normalization used by every route's transport:
+        ``"sum"``, ``"mean"``, or ``"symmetric"`` (default: "mean").
+    neighborhood_aggr : str, optional
+        How messages from multiple routes landing on the same rank are
+        combined: ``"sum"``, ``"mean"``, or ``"gated"`` for a learned
+        softmax over routes (default: "sum").
+    message_type : str, optional
+        Message function applied per route: ``"identity"`` or ``"mlp"``
+        over the concatenated target and transported features
+        (default: "identity").
+    update_type : str, optional
+        Per-rank update function: ``"residual"`` for a gated residual
+        update, or ``"mlp"`` over the concatenated feature and message
+        (default: "residual").
+    dropout : float, optional
+        Dropout applied inside the transport maps, message functions,
+        and update functions (default: 0.0).
+    map_kwargs : mapping, optional
+        Extra constructor arguments forwarded to each route's transport
+        map (default: None).
+    num_heads : int, optional
+        Alternative spelling of ``heads``. Passing both ``num_heads``
+        and a non-default ``heads`` raises ``ValueError``
+        (default: None).
+    message_gate_init : float, optional
+        Initial value for a learned scalar gate applied to each
+        update's message term, passed through ``sigmoid``. By default,
+        no gate is used and the message term has weight 1.
+    route_self_bias : float, optional
+        Initial ``neighborhood_aggr="gated"`` logit bias favoring
+        routes whose source and target ranks match (default: 1.0).
     message_schedule : sequence of str, optional
         If provided, apply neighborhood updates sequentially in this order
         inside each layer instead of aggregating all incoming routes
         simultaneously.
+    **kwargs : dict, optional
+        Additional keyword arguments.
     """
 
     def __init__(
@@ -122,7 +174,20 @@ class CopresheafCC(nn.Module):
         features: Mapping[int, torch.Tensor],
         connectivities: Mapping[str, torch.Tensor],
     ) -> dict[int, torch.Tensor]:
-        """Encode features on all configured cell ranks."""
+        """Encode features on all configured cell ranks.
+
+        Parameters
+        ----------
+        features : mapping of int to torch.Tensor
+            Input features keyed by cell rank.
+        connectivities : mapping of str to torch.Tensor
+            Batched connectivity tensors keyed by neighborhood name.
+
+        Returns
+        -------
+        dict of int to torch.Tensor
+            Output features keyed by cell rank.
+        """
         missing_ranks = set(self.ranks) - set(features)
         if missing_ranks:
             raise KeyError(

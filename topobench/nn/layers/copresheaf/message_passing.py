@@ -17,6 +17,27 @@ class CopresheafMessagePassing(nn.Module):
     paper. The learned map :math:`\rho_{y\to x}` transports a source feature
     into the target stalk before the optional message function ``alpha`` and
     a permutation-invariant aggregation are applied.
+
+    Parameters
+    ----------
+    channels : int
+        Dimension of the source and target cell features.
+    heads : int
+        Number of independent stalk bundles.
+    stalk_dimension : int, optional
+        Dimension of one stalk. By default, ``channels // heads``.
+    map_type : str
+        Name of the transport map passed to ``create_copresheaf_map``.
+    aggr : str
+        Per-edge normalization: ``"sum"``, ``"mean"``, or ``"symmetric"``.
+    message_type : str
+        Message function: ``"identity"`` or an ``"mlp"`` over the
+        concatenated target and transported features.
+    dropout : float
+        Dropout applied inside the transport map and the ``mlp``
+        message function.
+    map_kwargs : Mapping, optional
+        Extra constructor arguments forwarded to the transport map.
     """
 
     def __init__(
@@ -66,6 +87,24 @@ class CopresheafMessagePassing(nn.Module):
         num_source: int,
         num_target: int,
     ) -> torch.Tensor:
+        """Rescale edge weights according to ``self.aggr``.
+
+        Parameters
+        ----------
+        edge_index : torch.Tensor
+            ``[2, num_edges]`` ``(source, target)`` edge index.
+        edge_weight : torch.Tensor
+            One weight per edge, before normalization.
+        num_source : int
+            Number of source cells, used to size the degree buffer.
+        num_target : int
+            Number of target cells, used to size the degree buffer.
+
+        Returns
+        -------
+        torch.Tensor
+            One normalized weight per edge.
+        """
         source, target = edge_index
         if self.aggr == "sum":
             return edge_weight
@@ -87,7 +126,25 @@ class CopresheafMessagePassing(nn.Module):
         edge_index: torch.Tensor,
         edge_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return one aggregated message for every target cell."""
+        """Return one aggregated message for every target cell.
+
+        Parameters
+        ----------
+        source_features : torch.Tensor
+            ``[num_source, channels]`` features of the source cells.
+        target_features : torch.Tensor
+            ``[num_target, channels]`` features of the target cells.
+        edge_index : torch.Tensor
+            ``[2, num_edges]`` ``(source, target)`` edge index.
+        edge_weight : torch.Tensor, optional
+            One weight per edge. By default, every edge has weight 1.
+
+        Returns
+        -------
+        torch.Tensor
+            ``[num_target, channels]`` aggregated message per target
+            cell.
+        """
         if edge_index.ndim != 2 or edge_index.size(0) != 2:
             raise ValueError("edge_index must have shape [2, num_edges]")
         if source_features.size(-1) != self.channels:
@@ -143,7 +200,25 @@ class CopresheafMessagePassing(nn.Module):
 
 
 class CopresheafUpdate(nn.Module):
-    r"""Apply the CTNN update function :math:`\beta(h_x,m_x)`."""
+    r"""Apply the CTNN update function :math:`\beta(h_x,m_x)`.
+
+    Parameters
+    ----------
+    channels : int
+        Dimension of the cell features.
+    update_type : str
+        ``"residual"`` for a gated residual update, or ``"mlp"`` for an
+        MLP over the concatenated feature and message.
+    dropout : float
+        Dropout applied inside the update MLP.
+    trainable_epsilon : bool
+        If ``True``, the residual mixing coefficient ``epsilon`` is a
+        learned parameter; otherwise it is a fixed buffer at zero.
+    message_gate_init : float, optional
+        Initial value for a learned scalar gate applied to the message
+        term, passed through ``sigmoid``. By default, no gate is used
+        and the message term has weight 1.
+    """
 
     def __init__(
         self,
@@ -182,7 +257,21 @@ class CopresheafUpdate(nn.Module):
         self.norm = nn.LayerNorm(channels)
 
     def forward(self, features: torch.Tensor, message: torch.Tensor):
-        """Combine the current stalk feature with its aggregate message."""
+        """Combine the current stalk feature with its aggregate message.
+
+        Parameters
+        ----------
+        features : torch.Tensor
+            ``[num_cells, channels]`` current stalk features.
+        message : torch.Tensor
+            ``[num_cells, channels]`` aggregated incoming message.
+
+        Returns
+        -------
+        torch.Tensor
+            ``[num_cells, channels]`` updated and layer-normalized
+            features.
+        """
         gate = (
             1.0
             if self.message_gate is None
@@ -201,9 +290,57 @@ class CopresheafUpdate(nn.Module):
 class HigherOrderCopresheafLayer(nn.Module):
     r"""Apply Definition 10 over several rank-aware neighborhoods.
 
-    Each neighborhood owns a transport/message module. Messages that arrive
-    at the same rank are combined with a permutation-invariant sum or mean and
-    passed to one rank-specific update function.
+    Each neighborhood owns a transport/message module. Messages that
+    arrive at the same target rank are combined by
+    ``neighborhood_aggr`` and passed to one rank-specific update
+    function. ``"sum"`` and ``"mean"`` are permutation-invariant;
+    ``"gated"`` instead weights each route with a softmax over a
+    learned per-route logit, computed separately for the routes that
+    feed each target rank, so unlike sum or mean the weighting is not
+    symmetric across routes.
+
+    Parameters
+    ----------
+    channels : int
+        Dimension of the cell features at every rank.
+    neighborhoods : Sequence of str
+        TopoBench neighborhood names, one per directed route.
+    heads : int
+        Number of independent stalk bundles.
+    stalk_dimension : int, optional
+        Dimension of one stalk. By default, ``channels // heads``.
+    map_type : str or Mapping of str to str
+        Transport map name used by every route, or a mapping from
+        neighborhood name to map name.
+    aggr : str
+        Per-edge normalization forwarded to each
+        ``CopresheafMessagePassing``: ``"sum"``, ``"mean"``, or
+        ``"symmetric"``.
+    neighborhood_aggr : str
+        How messages from different routes are combined at a shared
+        target rank: ``"sum"``, ``"mean"``, or ``"gated"``.
+    message_type : str
+        Message function forwarded to each route: ``"identity"`` or
+        ``"mlp"``.
+    update_type : str
+        Update function forwarded to each rank: ``"residual"`` or
+        ``"mlp"``.
+    dropout : float
+        Dropout forwarded to the transport maps, message functions,
+        and update functions.
+    map_kwargs : Mapping, optional
+        Extra constructor arguments forwarded to every transport map.
+    message_gate_init : float, optional
+        Initial value for each rank's learned message gate. By
+        default, no gate is used.
+    route_self_bias : float
+        Initial ``route_logits`` value for self-routes (routes whose
+        source and target rank match), used only when
+        ``neighborhood_aggr`` is ``"gated"``.
+    message_schedule : Sequence of str, optional
+        Ordered neighborhood names for sequential, rather than
+        simultaneous, route updates. By default, all routes update
+        simultaneously.
     """
 
     def __init__(
@@ -305,7 +442,21 @@ class HigherOrderCopresheafLayer(nn.Module):
         features: Mapping[int, torch.Tensor],
         connectivities: Mapping[str, torch.Tensor],
     ) -> dict[int, torch.Tensor]:
-        """Update every represented cell rank simultaneously."""
+        """Update every represented cell rank simultaneously.
+
+        Parameters
+        ----------
+        features : Mapping of int to torch.Tensor
+            Cell features keyed by rank.
+        connectivities : Mapping of str to torch.Tensor
+            Neighborhood matrices keyed by TopoBench neighborhood
+            name, one per entry of ``neighborhoods``.
+
+        Returns
+        -------
+        dict of int to torch.Tensor
+            Updated cell features keyed by rank.
+        """
         if self.message_schedule is not None:
             return self._forward_scheduled(features, connectivities)
 
@@ -372,6 +523,19 @@ class HigherOrderCopresheafLayer(nn.Module):
         ``0->1, 1->2, 2->1, 1->0``.  Later steps see features already updated
         by earlier steps, making ``num_layers`` the number of repeated
         schedule sweeps.
+
+        Parameters
+        ----------
+        features : Mapping of int to torch.Tensor
+            Cell features keyed by rank.
+        connectivities : Mapping of str to torch.Tensor
+            Neighborhood matrices keyed by TopoBench neighborhood
+            name, one per entry of ``message_schedule``.
+
+        Returns
+        -------
+        dict of int to torch.Tensor
+            Updated cell features keyed by rank.
         """
         output = dict(features)
         for neighborhood in self.message_schedule or ():
@@ -397,13 +561,21 @@ class HigherOrderCopresheafLayer(nn.Module):
                 edge_index,
                 edge_weight,
             )
-            output[route.target_rank] = self.updates[
-                str(route.target_rank)
-            ](target_features, message)
+            output[route.target_rank] = self.updates[str(route.target_rank)](
+                target_features, message
+            )
         return output
 
     def route_weights(self) -> dict[str, float]:
-        """Return current per-target normalized route weights for logging."""
+        """Return current per-target normalized route weights for logging.
+
+        Returns
+        -------
+        dict of str to float
+            Softmax-normalized ``route_logits`` weight for every
+            neighborhood, or an empty dict when ``neighborhood_aggr``
+            is not ``"gated"`` or a ``message_schedule`` is set.
+        """
         if (
             self.message_schedule is not None
             or self.neighborhood_aggr != "gated"

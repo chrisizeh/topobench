@@ -17,6 +17,18 @@ class AllRankReadout(PropagateSignalDown):
     representation. This keeps one readout class across tasks while avoiding a
     graph-level bottleneck where all higher-order signal must be compressed into
     nodes before pooling.
+
+    Parameters
+    ----------
+    graph_hidden_dim : int, optional
+        Hidden dimension of the graph-level MLP. Defaults to the
+        propagation hidden dimension when not given.
+    graph_dropout : float, optional
+        Dropout applied inside the graph-level MLP (default: 0.0).
+    **kwargs : dict
+        Additional keyword arguments forwarded to
+        ``PropagateSignalDown``, from which this class also reads
+        ``num_cell_dimensions`` and ``out_channels``.
     """
 
     def __init__(
@@ -42,7 +54,22 @@ class AllRankReadout(PropagateSignalDown):
             )
 
     def __call__(self, model_out: dict, batch) -> dict:
-        """Run propagation and compute logits for the configured task level."""
+        """Run propagation and compute logits for the configured task level.
+
+        Parameters
+        ----------
+        model_out : dict
+            Dictionary containing the model output.
+        batch : torch_geometric.data.Data
+            Batch object containing the batched domain data.
+
+        Returns
+        -------
+        dict
+            Updated ``model_out``, with ``logits`` set and, for
+            graph-level tasks, ``graph_features`` and
+            ``readout_rank_pool_norms`` added.
+        """
         model_out = self.forward(model_out, batch)
         if self.task_level != "graph":
             self.last_rank_pool_norms = None
@@ -95,6 +122,16 @@ class AllRankReadout(PropagateSignalDown):
         Higher ranks may be absent for some graphs, for example when an
         explicit triangle lift sees a triangle-free graph. Rank 0 is the
         stable source of graph membership for graph-level readout pooling.
+
+        Parameters
+        ----------
+        batch : torch_geometric.data.Data
+            Batch object containing the batched domain data.
+
+        Returns
+        -------
+        int
+            Number of graphs represented in the batch.
         """
         batch_0 = batch.get("batch_0", None)
         if batch_0 is not None and batch_0.numel():

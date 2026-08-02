@@ -228,22 +228,6 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated training seeds.",
     )
     parser.add_argument(
-        "--job-shards",
-        type=int,
-        default=1,
-        help=(
-            "Split the planned job list into N shards. Use separate shell "
-            "processes with different --job-shard-index values to run "
-            "independent jobs concurrently on the same server/GPU."
-        ),
-    )
-    parser.add_argument(
-        "--job-shard-index",
-        type=int,
-        default=0,
-        help="Zero-based shard index to run when --job-shards > 1.",
-    )
-    parser.add_argument(
         "--n-graphs",
         type=int,
         default=50,
@@ -381,18 +365,16 @@ def main() -> None:
         print_available_variants()
         return
 
-    validate_job_shard_args(args)
     root = resolve_project_root(args.project_root)
     ensure_repo_on_path(root)
     torch.set_float32_matmul_precision(args.matmul_precision)
-    base_output_dir = (
+    output_dir = (
         args.output
         or root
         / "experiment_logs"
         / "copresheaf_rank3_knn"
         / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     ).resolve()
-    output_dir = shard_output_dir(base_output_dir, args)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     challenge = load_challenge_utils(root)
@@ -415,8 +397,6 @@ def main() -> None:
         for setting in selected_settings
         for seed in selected_seeds
     ]
-    total_jobs_before_sharding = len(jobs)
-    jobs = shard_jobs(jobs, args)
     completed = (
         set() if args.no_resume else read_completed_job_ids(output_dir)
     )
@@ -430,7 +410,6 @@ def main() -> None:
         seeds=selected_seeds,
         settings=selected_settings,
         total_jobs=len(jobs),
-        total_jobs_before_sharding=total_jobs_before_sharding,
         completed_jobs=len(completed),
     )
 
@@ -675,40 +654,6 @@ def seed_everything(seed: int) -> None:
     random.seed(seed)
 
 
-def validate_job_shard_args(args: argparse.Namespace) -> None:
-    """Validate job-sharding CLI arguments."""
-    if args.job_shards < 1:
-        raise ValueError("--job-shards must be at least one.")
-    if args.job_shard_index < 0 or args.job_shard_index >= args.job_shards:
-        raise ValueError(
-            "--job-shard-index must satisfy "
-            f"0 <= index < {args.job_shards}."
-        )
-
-
-def shard_output_dir(base_output_dir: Path, args: argparse.Namespace) -> Path:
-    """Return an output directory isolated for this shard."""
-    if args.job_shards == 1:
-        return base_output_dir
-    return (
-        base_output_dir
-        / f"shard_{args.job_shard_index:02d}_of_{args.job_shards:02d}"
-    )
-
-
-def shard_jobs(
-    jobs: list[tuple[Variant, str, Any, int]], args: argparse.Namespace
-) -> list[tuple[Variant, str, Any, int]]:
-    """Select this process's deterministic shard of the planned jobs."""
-    if args.job_shards == 1:
-        return jobs
-    return [
-        job
-        for index, job in enumerate(jobs)
-        if index % args.job_shards == args.job_shard_index
-    ]
-
-
 @contextlib.contextmanager
 def maybe_quiet(quiet: bool) -> Iterator[None]:
     """Suppress noisy training logs while preserving failure tails."""
@@ -947,7 +892,6 @@ def write_manifest(
     seeds: Iterable[int],
     settings: Iterable[Any],
     total_jobs: int,
-    total_jobs_before_sharding: int,
     completed_jobs: int,
 ) -> None:
     """Write the run manifest."""
@@ -980,9 +924,6 @@ def write_manifest(
             for setting in settings
         ],
         "total_jobs": total_jobs,
-        "total_jobs_before_sharding": total_jobs_before_sharding,
-        "job_shards": args.job_shards,
-        "job_shard_index": args.job_shard_index,
         "completed_jobs_at_start": completed_jobs,
     }
     (output_dir / "manifest.json").write_text(

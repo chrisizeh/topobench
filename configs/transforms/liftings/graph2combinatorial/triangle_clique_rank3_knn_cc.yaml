@@ -4,10 +4,10 @@ transform_name: "GraphTriangleCliqueCCLifting"
 complex_dim: 3
 preserve_edge_attr: false
 feature_lifting: ProjectionSum
-latent_rank3_cells: 4
+latent_rank3_cells: 64
 latent_rank3_memberships: 1
 latent_rank3_iterations: 8
 latent_rank3_assignment_temperature: 1.0
-latent_rank3_features: features_structure
+latent_rank3_features: features
 latent_rank3_direct_node_routes: false
 neighborhoods: ${oc.select:model.backbone.neighborhoods,${oc.select:model.preprocessing_params.neighborhoods,null}}
